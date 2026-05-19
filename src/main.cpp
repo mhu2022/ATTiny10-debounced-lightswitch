@@ -24,6 +24,16 @@ static inline void useButtonInputPinWithPullup() {
     PCICR |= (1 << PCIE0);  // Enable pin change interrupts for the group that includes PB2
 }
 
+static inline void useTimerInterrupt0At500usInterval() {
+    TCCR0A = (1 << WGM01);                              // Set CTC Mode (WGM0 = 2)
+    //OCR0A = 78;                                         // Set Compare Match value 78 * 64 prescaler / 1MHz = ~5ms
+    //OCR0A = 15;                                         // Set Compare Match value 15 * 64 prescaler / 1MHz = ~1ms
+    OCR0A = 75;                                         // Set Compare Match value 75 * 8 prescaler / 1MHz = ~500us
+    TIMSK0 |= (1 << OCIE0A);                            // Enable Output Compare A Match Interrupt
+    //TCCR0B = (1 << WGM02) | (1 << CS01) | (1 << CS00);  // Start the timer with a prescaler of 64.
+    TCCR0B = (1 << WGM02) | (1 << CS01);  // Start the timer with a prescaler of 8.
+}
+
 static inline void setup() {
     cli(); // Disable global interrupts during setup
 
@@ -31,12 +41,23 @@ static inline void setup() {
 
     useButtonInputPinWithPullup();
 
+    useTimerInterrupt0At500usInterval();
+
     sei(); // Enable global interrupts
 }
 
 // Pin Change Interrupt - triggered on any change on PB2 (button)
 ISR(PCINT0_vect) {
     gpFlags |= FLAG_STATE_DEBOUNCING;   // Set debouncing state flag
+}
+
+// Timer0 ISR: Executes in background every 500us to clean the signal
+ISR(TIM0_COMPA_vect) {
+
+    if(!(gpFlags & FLAG_STATE_DEBOUNCING)) {
+        return; // If not in debouncing state, do nothing
+    }
+
 }
 
 int main(void) {
