@@ -45,9 +45,18 @@ int main(void) {
 
     while (1)
     {
+        cli(); // make sure to disable interrupts while reading and clearing flags to prevent race conditions
+        bool debouncingState = gpFlags & (FLAG_STATE_DEBOUNCING);
+        gpFlags &= ~(FLAG_STATE_DEBOUNCING); // Clear debouncing state flag after reading
+        sei();
 
-        set_sleep_mode(SLEEP_MODE_PWR_DOWN);
-    
+        if(debouncingState) {
+            set_sleep_mode(SLEEP_MODE_IDLE);
+        }
+        else {
+            set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+        }
+
         sleep_mode(); 
     }
     
