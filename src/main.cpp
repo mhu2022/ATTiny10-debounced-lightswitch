@@ -79,7 +79,7 @@ ISR(TIM0_COMPA_vect) {
     if (buttonBounceHistory == 0x7F) {
         gpFlags |= FLAG_TRIGGER_TOGGLELIGHT;     // Set button trigger flag
     }
-    // Indien het signaal 8x2ms stabiel is (0x00 of 0xFF): stop de timer
+    // If the signal is stable for 8x2ms (0x00 of 0xFF): stop the timer
     else if ((buttonBounceHistory == 0x00) || (buttonBounceHistory == 0xFF)) {
         buttonBounceHistory = 0x00;  // <-- Add this line to reset the history after stable state is reached
         gpFlags &= ~FLAG_STATE_DEBOUNCING;     // Clear button trigger flag
@@ -102,8 +102,15 @@ int main(void) {
     {
         cli(); // make sure to disable interrupts while reading and clearing flags to prevent race conditions
         bool debouncingState = gpFlags & (FLAG_STATE_DEBOUNCING);
-        gpFlags &= ~(FLAG_STATE_DEBOUNCING); // Clear debouncing state flag after reading
+        bool triggeredToggleLight = gpFlags & (FLAG_TRIGGER_TOGGLELIGHT);
+        gpFlags &= ~(FLAG_TRIGGER_TOGGLELIGHT); // Clear trigger flags after reading
         sei();
+
+        if(triggeredToggleLight) {
+            PORTB ^= (1 << OUTPUT_PIN); // Toggle the output pin state
+
+            gpFlags &= ~(FLAG_STATE_DEBOUNCING); // Clear debouncing state flag just in case
+        }
 
         if(debouncingState) {
             set_sleep_mode(SLEEP_MODE_IDLE);
