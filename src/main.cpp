@@ -1,26 +1,47 @@
+// ATTINY10 Debounced Light Switch
+// This code implements a debounced light switch using an ATTINY10 microcontroller. It detects button presses and long presses, toggling an output pin accordingly. The code uses pin change interrupts for button state changes and a timer interrupt for debouncing and long press detection.
+// Running at 1 MHz internal clock, with a 1ms timer interval for debouncing and long press timing.
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
+#include <avr/wdt.h>
+#include <util/delay.h>
 
 #define OUTPUT_PIN PB0
 #define BUTTON_PIN PB2
 #define BUTTON_PUE PUEB2
 
 #define FLAG_STATE_DEBOUNCING 0x01
-#define FLAG_TRIGGER_TOGGLELIGHT 0x02
+#define FLAG_STATE_LONGPRESS 0x04
+
+#define FLAG_TRIGGER_TOGGLELIGHT 0x10   // Tells the main loop to toggle the light state on the next iteration
+#define FLAG_TRIGGER_LONGPRESS 0x20     // Tells the main loop to execute the long press action on the next iteration
+
+#define RISING_EDGE 0x7FU
+#define FALLING_EDGE 0xFEU
+#define STABLE_LOW 0x00U
+#define STABLE_HIGH 0xFFU
+
+#define DEBOUNCE_MIN_TICKS 20U      // Minimum ticks to consider a valid press, this is used to filter out very short presses that are likely just noise. At 1ms intervals, 20 ticks would be 20ms, which is a common debounce time.
+#define LONG_PRESS_TICKS 4000U      // 4 seconds at 1ms intervals
 
 volatile uint8_t gpFlags;
 volatile uint8_t buttonBounceHistory = 0x00;
+volatile uint16_t longPressCounter = 0;
+
+static inline void toggleOutputPin() {
+    PORTB ^= (1 << OUTPUT_PIN); // Toggle the output pin state
+}
 
 static inline void testThroughLed() {
     // change the state of the output pin to indicate an error (e.g., in BADISR_vect)
-    if(PORTB & (1 << OUTPUT_PIN)) {
-        PORTB &= ~(1 << OUTPUT_PIN); // this is indeed working, if the led comes off.
-        PORTB |= (1 << OUTPUT_PIN); // this is indeed working, if the led comes on.
-    }
-    else {
-        PORTB |= (1 << OUTPUT_PIN); // this is indeed working, if the led comes on.
-        PORTB &= ~(1 << OUTPUT_PIN); // this is indeed working, if the led comes off.
+    toggleOutputPin();
+    _delay_ms(50); // Short delay to make the toggle visible
+}
+
+static inline void testThroughLedx10() {
+    for(uint8_t i = 0; i < 10; i++) {
+        testThroughLed();
     }
 }
 
@@ -29,7 +50,7 @@ static inline void useOuputPin() {
     PORTB &= ~(1 << OUTPUT_PIN); // Ensure the output starts LOW
 }
 
-static inline void useButtonInputPinWithPullup() {
+static inline void useButtonInputPinWithPullupAndInterrupt() {
     DDRB &= ~(1 << BUTTON_PIN); // Set PB2 as input
     PUEB |= (1 << BUTTON_PUE);      // Pull-up voor de drukknop (PB2)
 
@@ -38,14 +59,26 @@ static inline void useButtonInputPinWithPullup() {
     PCICR |= (1 << PCIE0);  // Enable pin change interrupts for the group that includes PB2
 }
 
-static inline void useTimerInterrupt0At500usInterval() {
-    TCCR0A = (1 << WGM01);                              // Set CTC Mode (WGM0 = 2)
-    //OCR0A = 78;                                         // Set Compare Match value 78 * 64 prescaler / 1MHz = ~5ms
-    //OCR0A = 15;                                         // Set Compare Match value 15 * 64 prescaler / 1MHz = ~1ms
-    OCR0A = 75;                                         // Set Compare Match value 75 * 8 prescaler / 1MHz = ~500us
-    TIMSK0 |= (1 << OCIE0A);                            // Enable Output Compare A Match Interrupt
-    //TCCR0B = (1 << WGM02) | (1 << CS01) | (1 << CS00);  // Start the timer with a prescaler of 64.
-    TCCR0B = (1 << WGM02) | (1 << CS01);  // Start the timer with a prescaler of 8.
+static inline void useTimerInterrupt0At1msInterval() {
+    TCCR0A = 0;                          // WGM00 = 0, WGM01 = 0 (Normale poortwerking)
+    OCR0A = 124;                         // 125 ticks bij een 8-prescaler op 1MHz = exact 1,00 ms
+    TIMSK0 |= (1 << OCIE0A);             // Schakel Output Compare A Match Interrupt in
+    TCCR0B = (1 << WGM02) | (1 << CS01); // Mode 4: CTC (WGM02=1), Prescaler = 8 (CS01=1)
+}
+
+static inline void stopTimer() {
+    TIMSK0 &= ~(1 << OCIE0A);   // Stop the timer to prevent further interrupts during the long press action
+}
+
+static inline void resumeTimer() {
+    TIMSK0 |= (1 << OCIE0A);    // Herstel timer interrupts en reset de debounce status
+}
+
+static inline void resetStateMachine() {
+    buttonBounceHistory = 0x00;
+    longPressCounter = 0;
+    gpFlags &= ~(FLAG_STATE_LONGPRESS|FLAG_STATE_DEBOUNCING);
+    PCIFR |= (1 << PCIF0);  // Clear any pending 'rebound' interrupts in the hardware buffer
 }
 
 static inline void setup() {
@@ -53,46 +86,63 @@ static inline void setup() {
 
     useOuputPin();
 
-    useButtonInputPinWithPullup();
+    useButtonInputPinWithPullupAndInterrupt();
 
-    useTimerInterrupt0At500usInterval();
+    useTimerInterrupt0At1msInterval();
 
     sei(); // Enable global interrupts
 }
 
-// Pin Change Interrupt - triggered on any change on PB2 (button)
+// 1. Wakes up the MCU from Power Down when the button is first touched
 ISR(PCINT0_vect) {
-    gpFlags |= FLAG_STATE_DEBOUNCING;   // Set debouncing state flag
+    gpFlags |= FLAG_STATE_DEBOUNCING; 
 }
 
-// Timer0 ISR: Executes in background every 500us to clean the signal
+// 2. Ticks every 1ms when awake to track the button state
 ISR(TIM0_COMPA_vect) {
+    uint8_t currentPinState = !((PINB >> BUTTON_PIN) & 0x01);
+    buttonBounceHistory = (buttonBounceHistory << 1) | currentPinState;
 
-    if(!(gpFlags & FLAG_STATE_DEBOUNCING)) {
-        return; // If not in debouncing state, do nothing
+    // 1. EDGE DETECTION (Debounced)
+    if (buttonBounceHistory == 0x7F) { 
+        // Button was cleanly pressed down (Transitioned from 0s to stable 1s)
+        longPressCounter = 0;
+        gpFlags &= ~FLAG_STATE_LONGPRESS; // Clear long press state in case it was set from a previous press
+    } 
+
+    // 2. Button held down:
+    if((buttonBounceHistory & 0x0F) == 0x0F) {
+        if (!(gpFlags & FLAG_STATE_LONGPRESS)) {
+            longPressCounter++;
+            
+            //if ((longPressCounter & 0xFF) == 0) { PORTB ^= (1 << OUTPUT_PIN); } test code to see the counter in action, toggling the output pin every 256ms while the button is held down, this can be useful for debugging long press detection without having to wait the full 4 seconds.
+
+            // Check if threshold reached
+            if (longPressCounter >= LONG_PRESS_TICKS) {
+                gpFlags |= FLAG_TRIGGER_LONGPRESS;
+                gpFlags |= FLAG_STATE_LONGPRESS; // Mark as handled to suppress short-press on release
+            }
+        }
     }
-
-    uint8_t raw_sample = !((PINB >> BUTTON_PIN) & 0x01);     // Invert read because pull-up makes a press equal 0
-    buttonBounceHistory = (buttonBounceHistory << 1) | raw_sample;
-
-    // Detect exact moment button transitions to a stable pressed state (0b01111111)
-    if (buttonBounceHistory == 0x7F) {
-        gpFlags |= FLAG_TRIGGER_TOGGLELIGHT;     // Set button trigger flag
-    }
-    // If the signal is stable for 8x2ms (0x00 of 0xFF): stop the timer
-    else if ((buttonBounceHistory == 0x00) || (buttonBounceHistory == 0xFF)) {
-        buttonBounceHistory = 0x00;  // <-- Add this line to reset the history after stable state is reached
-        gpFlags &= ~FLAG_STATE_DEBOUNCING;     // Clear button trigger flag
+    // Button released:
+    if((buttonBounceHistory & 0x0F) == 0x00) {
+        if (!(gpFlags & FLAG_STATE_LONGPRESS) && (longPressCounter > DEBOUNCE_MIN_TICKS)) {
+            gpFlags |= FLAG_TRIGGER_TOGGLELIGHT;
+        }
+        // Reset counters and sequence flags
+        longPressCounter = 0;
+        gpFlags &= ~(FLAG_STATE_LONGPRESS);
+        gpFlags &= ~FLAG_STATE_DEBOUNCING;
+        
+        PCIFR |= (1 << PCIF0); // Clear residual contact bounces
     }
 
 }
 
 // This is a catch-all for any unexpected interrupts, which should not happen in this program. If it does, we can use the LED to indicate an error state.
-ISR(BADISR_vect, ISR_NAKED) {
-    testThroughLed();
-    testThroughLed();
-    testThroughLed();
-}
+// ISR(BADISR_vect, ISR_NAKED) {
+//     testThroughLed(3);
+// }
 
 int main(void) {
 
@@ -101,15 +151,23 @@ int main(void) {
     while (1)
     {
         cli(); // make sure to disable interrupts while reading and clearing flags to prevent race conditions
+        
         bool debouncingState = gpFlags & (FLAG_STATE_DEBOUNCING);
         bool triggeredToggleLight = gpFlags & (FLAG_TRIGGER_TOGGLELIGHT);
-        gpFlags &= ~(FLAG_TRIGGER_TOGGLELIGHT); // Clear trigger flags after reading
-        sei();
-
+        bool triggeredLongPress = gpFlags & (FLAG_TRIGGER_LONGPRESS);
+   
         if(triggeredToggleLight) {
-            PORTB ^= (1 << OUTPUT_PIN); // Toggle the output pin state
+            toggleOutputPin();
+            gpFlags &= ~(FLAG_TRIGGER_TOGGLELIGHT); 
+        }
 
-            gpFlags &= ~(FLAG_STATE_DEBOUNCING); // Clear debouncing state flag just in case
+        if(triggeredLongPress) {
+            stopTimer(); // Stop the timer to prevent further interrupts during the long press action
+            testThroughLedx10(); // Indicate long press with a second of LED blink.
+            resumeTimer();
+            resetStateMachine(); // Reset the state machine to be ready for the next button press sequence, this is necessary to prevent the long press trigger from firing repeatedly if the button is held down after a long press has been registered
+            debouncingState = false;
+            gpFlags &= ~(FLAG_TRIGGER_LONGPRESS); 
         }
 
         if(debouncingState) {
@@ -119,7 +177,10 @@ int main(void) {
             set_sleep_mode(SLEEP_MODE_PWR_DOWN);
         }
 
-        sleep_mode(); 
+        sleep_enable();
+        sei();         // Interrupts are guaranteed to only execute AFTER the sleep instruction
+        sleep_cpu();   // Safe sleep window
+        sleep_disable(); 
     }
     
 }
