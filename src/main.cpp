@@ -14,6 +14,10 @@ static inline void useOuputPin() {
 static inline void useButtonInputPinWithPullup() {
     DDRB &= ~(1 << BUTTON_PIN); // Set PB2 as input
     PUEB |= (1 << BUTTON_PUE);      // Pull-up voor de drukknop (PB2)
+
+    // Enable pin change interrupt for PB2
+    PCMSK |= (1 << PCINT2); // Enable pin change interrupt for PB2
+    PCICR |= (1 << PCIE0);  // Enable pin change interrupts for the group that includes PB2
 }
 
 static inline void setup() {
@@ -24,6 +28,10 @@ static inline void setup() {
     useButtonInputPinWithPullup();
 
     sei(); // Enable global interrupts
+}
+
+// Pin Change Interrupt - triggered on any change on PB2 (button)
+ISR(PCINT0_vect) {
 }
 
 int main(void) {
