@@ -10,6 +10,18 @@
 
 volatile uint8_t gpFlags;
 
+static inline void testThroughLed() {
+    // change the state of the output pin to indicate an error (e.g., in BADISR_vect)
+    if(PORTB & (1 << OUTPUT_PIN)) {
+        PORTB &= ~(1 << OUTPUT_PIN); // this is indeed working, if the led comes off.
+        PORTB |= (1 << OUTPUT_PIN); // this is indeed working, if the led comes on.
+    }
+    else {
+        PORTB |= (1 << OUTPUT_PIN); // this is indeed working, if the led comes on.
+        PORTB &= ~(1 << OUTPUT_PIN); // this is indeed working, if the led comes off.
+    }
+}
+
 static inline void useOuputPin() {
     DDRB |= (1 << OUTPUT_PIN); // Set PB0 as output
     PORTB &= ~(1 << OUTPUT_PIN); // Ensure the output starts LOW
@@ -58,6 +70,13 @@ ISR(TIM0_COMPA_vect) {
         return; // If not in debouncing state, do nothing
     }
 
+}
+
+// This is a catch-all for any unexpected interrupts, which should not happen in this program. If it does, we can use the LED to indicate an error state.
+ISR(BADISR_vect, ISR_NAKED) {
+    testThroughLed();
+    testThroughLed();
+    testThroughLed();
 }
 
 int main(void) {
