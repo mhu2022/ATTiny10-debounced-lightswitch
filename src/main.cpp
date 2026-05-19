@@ -7,8 +7,10 @@
 #define BUTTON_PUE PUEB2
 
 #define FLAG_STATE_DEBOUNCING 0x01
+#define FLAG_TRIGGER_TOGGLELIGHT 0x02
 
 volatile uint8_t gpFlags;
+volatile uint8_t buttonBounceHistory = 0x00;
 
 static inline void testThroughLed() {
     // change the state of the output pin to indicate an error (e.g., in BADISR_vect)
@@ -68,6 +70,19 @@ ISR(TIM0_COMPA_vect) {
 
     if(!(gpFlags & FLAG_STATE_DEBOUNCING)) {
         return; // If not in debouncing state, do nothing
+    }
+
+    uint8_t raw_sample = !((PINB >> BUTTON_PIN) & 0x01);     // Invert read because pull-up makes a press equal 0
+    buttonBounceHistory = (buttonBounceHistory << 1) | raw_sample;
+
+    // Detect exact moment button transitions to a stable pressed state (0b01111111)
+    if (buttonBounceHistory == 0x7F) {
+        gpFlags |= FLAG_TRIGGER_TOGGLELIGHT;     // Set button trigger flag
+    }
+    // Indien het signaal 8x2ms stabiel is (0x00 of 0xFF): stop de timer
+    else if ((buttonBounceHistory == 0x00) || (buttonBounceHistory == 0xFF)) {
+        buttonBounceHistory = 0x00;  // <-- Add this line to reset the history after stable state is reached
+        gpFlags &= ~FLAG_STATE_DEBOUNCING;     // Clear button trigger flag
     }
 
 }
