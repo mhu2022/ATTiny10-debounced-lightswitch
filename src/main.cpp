@@ -11,9 +11,17 @@ static inline void useOuputPin() {
     PORTB &= ~(1 << OUTPUT_PIN); // Ensure the output starts LOW
 }
 
+static inline void useButtonInputPinWithPullup() {
+    DDRB &= ~(1 << BUTTON_PIN); // Set PB2 as input
+    PUEB |= (1 << BUTTON_PUE);      // Pull-up voor de drukknop (PB2)
+}
+
 static inline void setup() {
     cli(); // Disable global interrupts during setup
 
+    useOuputPin();
+
+    useButtonInputPinWithPullup();
 
     sei(); // Enable global interrupts
 }
