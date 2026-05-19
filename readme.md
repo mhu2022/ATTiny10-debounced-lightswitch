@@ -126,6 +126,7 @@ Demonstrate debouncing and toggle switching with an ATTiny10.
 - Only woken by button press
 - This minimizes current draw during sleep periods
 
+** Using 0.1 uA when off, from a 4.0 Volt bettery source **
 
 
 DUMP OF A NE ATTINY10
