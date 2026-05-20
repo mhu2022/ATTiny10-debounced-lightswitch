@@ -129,7 +129,8 @@ Demonstrate debouncing and toggle switching with an ATTiny10.
 ** Using 0.1 uA when off, from a 4.0 Volt bettery source **
 
 
-DUMP OF A NE ATTINY10
+DUMP OF AN ATTINY10
+```code
 >D
 NVM enabled
 Current memory state:
@@ -228,3 +229,4 @@ Received unknown command
 Received unknown command
 
 >
+```
